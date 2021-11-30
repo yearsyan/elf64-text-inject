@@ -39,7 +39,7 @@ int parse_arguments(struct cmd_arguments* arguments, int argc, char **argv) {
                 return -1;
             }
             if (arg_index + 1 < argc) {
-                arguments->save_file = argv[arg_index+1];
+                arguments->source_file = argv[arg_index+1];
                 arg_index++; // pass path
                 input_write = 1;
             } else {
@@ -108,6 +108,8 @@ int main(int argc, char **argv) {
         const char *data = parse_inject_code(arguments.code_file, &code_len);
         inject_code_to_elf(arguments.source_file, (void *)data, code_len, arguments.save_file);
     }
+
+    printf("Write new elf executable file success.\n");
 
     return 0;
 }
