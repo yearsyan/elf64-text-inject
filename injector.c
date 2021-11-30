@@ -149,9 +149,9 @@ int inject_code_to_elf(const char* file_path, void* data, size_t inject_len, con
 
     new_header->e_shoff += section_header_off; // reset e_shoff
     new_header->e_entry = last_section_in_text_segment->sh_addr+last_section_in_text_segment->sh_size;
-    int save_fd = open(save_at, O_RDWR | O_CREAT, S_IRUSR | S_IRGRP | S_IROTH | S_IXUSR | S_IWUSR );
     munmap(file_mem, file_size);
     close(fd);
+    int save_fd = open(save_at, O_RDWR | O_CREAT, S_IRUSR | S_IRGRP | S_IROTH | S_IXUSR | S_IWUSR );
     if (save_fd != -1) {
         write(save_fd, save_file_mem, file_size + PAGE_SIZE);
         free(save_file_mem);
