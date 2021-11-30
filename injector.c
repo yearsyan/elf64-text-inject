@@ -31,9 +31,10 @@ int inject_code_to_elf(const char* file_path, void* data, size_t inject_len, con
     int fd = open(file_path, O_RDONLY);
     if (fd == -1) {
         fprintf(stderr, "open source file error\n");
-        return -1;
+        return OPEN_ORIGIN_FILE_ERROR;
     }
-    unsigned char to_origin_code[] = {0x48, 0x8D, 0x05, 0x00, 0x00, 0x00, 0x00, 0xFF, 0xE0};
+    // jmp rel32
+    unsigned char to_origin_code[] = {0xE9, 0x00, 0x00, 0x00, 0x00};
     void* file_mem = open_file_to_mem(fd, &file_size);
     void* save_file_mem = malloc(file_size + PAGE_SIZE);
     Elf64_Ehdr* new_header = (Elf64_Ehdr*) save_file_mem;
@@ -116,9 +117,9 @@ int inject_code_to_elf(const char* file_path, void* data, size_t inject_len, con
         {
             size_t entry = ((Elf64_Ehdr*)file_mem)->e_entry;
             size_t trampoline_start = last_section_in_text_segment->sh_addr
-                                      + last_section_in_text_segment->sh_size + inject_len + 7; // 7 is the `lea rax, [rip+offset]` len
+                                      + last_section_in_text_segment->sh_size + inject_len + 5; // 5 is the jmp ins len
             int32_t two_entry_offset = (int32_t)(entry - trampoline_start);
-            memcpy(to_origin_code + 3, &two_entry_offset, sizeof(int32_t));
+            memcpy(to_origin_code + 1, &two_entry_offset, sizeof(int32_t));
         }
 
         for(int section_index = 0; section_index < ((Elf64_Ehdr*)file_mem)->e_shnum; section_index++) {
@@ -128,6 +129,12 @@ int inject_code_to_elf(const char* file_path, void* data, size_t inject_len, con
                                                      section_index * ((Elf64_Ehdr *) file_mem)->e_shentsize);
             *new_section = *section;
             if (section == last_section_in_text_segment) {
+                // inject code
+                size_t max_inject_len = PAGE_SIZE - (text_segment->p_offset + text_segment->p_filesz) % PAGE_SIZE;
+                if (max_inject_len < inject_len) {
+                    fprintf(stderr,"max inject len: %zu, but inject len is: %zu\n", max_inject_len, inject_len);
+                    return NO_ENOUGH_SPACE;
+                }
                 new_section->sh_size += inject_len + sizeof(to_origin_code);
                 memcpy((char*)save_file_mem + section->sh_offset + section->sh_size, data, inject_len);
                 memcpy((char*)save_file_mem + section->sh_offset + section->sh_size + inject_len, to_origin_code,
@@ -151,7 +158,7 @@ int inject_code_to_elf(const char* file_path, void* data, size_t inject_len, con
     } else {
         fprintf(stderr, "create output file error\n");
         free(save_file_mem);
-        return -1;
+        return CREATE_OUTPUT_FILE_ERROR;
     }
     close(save_fd);
 
