@@ -25,6 +25,21 @@ const char* get_shstrtab_start(void* elf_file_start) {
     return (char *)elf_file_start + shstrtab_section->sh_offset;
 }
 
+// use X10 register
+unsigned int get_adrp_ins(long address_offset) {
+    unsigned int res = 0x9000000A;
+    address_offset >>= 12;
+    res |= (address_offset & 3) << 29;
+    res |= ((address_offset & 0x1ffffc) << 3);
+    return res;
+}
+
+unsigned int get_add_ins(int value) {
+    unsigned int res = 0x9100014A;
+    res |= ((0xfff & value) << 10);
+    return res;
+}
+
 
 int inject_code_to_elf(const char* file_path, void* data, size_t inject_len, const char* save_at) {
     size_t file_size;
@@ -33,12 +48,14 @@ int inject_code_to_elf(const char* file_path, void* data, size_t inject_len, con
         fprintf(stderr, "open source file error\n");
         return OPEN_ORIGIN_FILE_ERROR;
     }
-    // jmp rel32
-    unsigned char to_origin_code[] = {0xE9, 0x00, 0x00, 0x00, 0x00};
+    // jmp rel32 for x86_64
+    unsigned char to_origin_code[12] = {0xE9, 0x00, 0x00, 0x00, 0x00};
+    unsigned int jmp_code_len = sizeof(to_origin_code);
     void* file_mem = open_file_to_mem(fd, &file_size);
     void* save_file_mem = malloc(file_size + PAGE_SIZE);
     Elf64_Ehdr* new_header = (Elf64_Ehdr*) save_file_mem;
     memset(save_file_mem, 0, file_size + PAGE_SIZE);
+
 
 
     memcpy(save_file_mem, file_mem, sizeof(Elf64_Ehdr));
@@ -74,8 +91,8 @@ int inject_code_to_elf(const char* file_path, void* data, size_t inject_len, con
                     segment->p_offset + segment->p_filesz > text_section->sh_offset
             ) {
                 text_segment = segment;
-                ((Elf64_Phdr*)new_program_header_at)->p_filesz += inject_len + sizeof(to_origin_code);
-                ((Elf64_Phdr*)new_program_header_at)->p_memsz += inject_len + sizeof(to_origin_code);
+                ((Elf64_Phdr*)new_program_header_at)->p_filesz += inject_len + jmp_code_len;
+                ((Elf64_Phdr*)new_program_header_at)->p_memsz += inject_len + jmp_code_len;
             }
 
         }
@@ -86,7 +103,7 @@ int inject_code_to_elf(const char* file_path, void* data, size_t inject_len, con
     for (int segment_index = 0; segment_index < ((Elf64_Ehdr*)file_mem)->e_phnum; segment_index++) {
         Elf64_Phdr* segment = (Elf64_Phdr *) (program_headers_base +
                                               segment_index * ((Elf64_Ehdr *) file_mem)->e_phentsize);
-        if (segment->p_offset > text_segment->p_offset) {
+        if (segment->p_offset > text_section->sh_offset) {
             Elf64_Phdr* save_segment = (Elf64_Phdr *) ((char *)save_file_mem + ((Elf64_Ehdr*)save_file_mem)->e_phoff +
                                                        segment_index * ((Elf64_Ehdr *) file_mem)->e_phentsize);
             save_segment->p_offset += PAGE_SIZE;
@@ -116,10 +133,26 @@ int inject_code_to_elf(const char* file_path, void* data, size_t inject_len, con
         // set to origin code
         {
             size_t entry = ((Elf64_Ehdr*)file_mem)->e_entry;
-            size_t trampoline_start = last_section_in_text_segment->sh_addr
-                                      + last_section_in_text_segment->sh_size + inject_len + 5; // 5 is the jmp ins len
-            int32_t two_entry_offset = (int32_t)(entry - trampoline_start);
-            memcpy(to_origin_code + 1, &two_entry_offset, sizeof(int32_t));
+            if (new_header->e_machine == EM_X86_64) {
+                size_t trampoline_start = last_section_in_text_segment->sh_addr
+                                          + last_section_in_text_segment->sh_size + inject_len + 5; // 5 is the jmp ins len
+                int32_t two_entry_offset = (int32_t)(entry - trampoline_start);
+                to_origin_code[0] = 0xE9;
+                memcpy(to_origin_code + 1, &two_entry_offset, sizeof(int32_t));
+                jmp_code_len = 5;
+            } else if (new_header->e_machine == EM_AARCH64) {
+                size_t trampoline_start_page = (0xffffffffff000000) & (last_section_in_text_segment->sh_addr +
+                        last_section_in_text_segment->sh_size + inject_len);
+                size_t entry_start_page = (0xffffffffff000000) & entry;
+                uint32_t adpr_ins = get_adrp_ins( (long)(entry_start_page - trampoline_start_page));
+                uint32_t add_ins = get_add_ins((int)(entry & 0xffffff));
+                uint32_t br_ins = 0xd61f0140;
+                memcpy(to_origin_code, &adpr_ins, sizeof(int32_t));
+                memcpy(to_origin_code + sizeof(int32_t), &add_ins, sizeof(int32_t));
+                memcpy(to_origin_code + sizeof(int32_t)*2, &br_ins, sizeof(int32_t));
+                jmp_code_len = 4 * 3; // 3 instrument
+            }
+
         }
 
         for(int section_index = 0; section_index < ((Elf64_Ehdr*)file_mem)->e_shnum; section_index++) {
@@ -135,10 +168,10 @@ int inject_code_to_elf(const char* file_path, void* data, size_t inject_len, con
                     fprintf(stderr,"max inject len: %zu, but inject len is: %zu\n", max_inject_len, inject_len);
                     return NO_ENOUGH_SPACE;
                 }
-                new_section->sh_size += inject_len + sizeof(to_origin_code);
+                new_section->sh_size += inject_len + jmp_code_len;
                 memcpy((char*)save_file_mem + section->sh_offset + section->sh_size, data, inject_len);
                 memcpy((char*)save_file_mem + section->sh_offset + section->sh_size + inject_len, to_origin_code,
-                       sizeof(to_origin_code));
+                       jmp_code_len);
             } else if (section->sh_offset > last_section_in_text_segment->sh_offset) {
                 new_section->sh_offset += PAGE_SIZE;
             }
