@@ -1,7 +1,7 @@
 # elf64-text-inject 
 ## Introduction 
 This is a tool can inject code to an executable elf file. After injecting, the entrypoint of the elf will be replace to the inject code, and injector will append an instruction which help the program jump to the origin entry at the end of the code you inject.
-The injector only support amd64 now because only amd64 recover trampoline has been implemented.
+The injector supports amd64 and aarch64 elf now.
 ## Principle 
 The code injected will be inject to the end of segment that `.text` section at because this segment is executable and there will be some empty virtual memory space due to memory align. 
 As shown below, the fourth segment is executable and the segment align is `0x1000` and it end at `0x1000 + 0x2f5 = 0x12f5` with the fifth segment start at `0x2000`, so the virtual memory address between `0x12f5` and `0x2000` will not be used after program loaded which means we can inject code to the space with other segments' virtual address not be changed.  
